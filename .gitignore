@@ -24,3 +24,4 @@
 # End of https://www.gitignore.io/api/rust,visualstudiocode
 
 .env
+.spotify_token_cache.json
