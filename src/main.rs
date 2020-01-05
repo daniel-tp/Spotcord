@@ -5,8 +5,9 @@ use rspotify::spotify::client::Spotify;
 use rspotify::spotify::oauth2::{SpotifyClientCredentials, SpotifyOAuth};
 use rspotify::spotify::util::get_token;
 use serenity::{
-    model::{channel::Message, gateway::Ready},
+    model::{channel::Message, gateway::Ready, gateway::Activity},
     prelude::*,
+
 };
 use std::collections::HashSet;
 
@@ -53,10 +54,19 @@ impl EventHandler for Handler {
             // My god this needs to be improved
             return;
         }
+        if msg.content.starts_with("!playlist"){
+            if let Err(why) = msg.channel_id.say(&ctx.http, format!("Playlist is here: https://open.spotify.com/playlist/{}", &dotenv!("PLAYLIST")[17..])) {
+                println!("Error sending message: {:?}", why);
+            }
+            return;
+        }
         if msg.content.contains("spotify") {
             let mut ids: HashSet<String> = HashSet::new();
             for c in SPOTIFY_TRACK_REGEX.captures_iter(&msg.content) {
                 ids.insert(c.get(1).unwrap().as_str().to_string());
+            }
+            if ids.len()==0 {
+                return;
             }
             match add_to_playlist(ids) {
                 PlaylistResult::Ok => {
@@ -72,8 +82,10 @@ impl EventHandler for Handler {
             }
         }
     }
-    fn ready(&self, _: Context, ready: Ready) {
+    fn ready(&self, ctx: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
+        let activity = Activity::listening("Your Music");
+        ctx.set_activity(activity);
     }
 }
 
