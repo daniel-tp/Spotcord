@@ -1,15 +1,15 @@
-use dotenv_codegen::dotenv;
+use dotenv::dotenv;
 use lazy_static::lazy_static;
 use regex::Regex;
 use rspotify::spotify::client::Spotify;
 use rspotify::spotify::oauth2::{SpotifyClientCredentials, SpotifyOAuth};
 use rspotify::spotify::util::get_token;
 use serenity::{
-    model::{channel::Message, gateway::Ready, gateway::Activity},
+    model::{channel::Message, gateway::Activity, gateway::Ready},
     prelude::*,
-
 };
 use std::collections::HashSet;
+use std::env;
 
 lazy_static! {
     static ref SPOTIFY_TRACK_REGEX: Regex =
@@ -20,8 +20,8 @@ lazy_static! {
     static ref SPOTIFY: Spotify = {
         let mut spotify_oauth = SpotifyOAuth::default()
             .scope("playlist-modify-private playlist-modify-public")
-            .client_id(dotenv!("CLIENT_ID"))
-            .client_secret(dotenv!("CLIENT_SECRET"))
+            .client_id(env::var("CLIENT_ID").unwrap().as_str())
+            .client_secret(env::var("CLIENT_SECRET").unwrap().as_str())
             .redirect_uri("http://localhost.com")
             .build();
         match get_token(&mut spotify_oauth) {
@@ -50,12 +50,18 @@ enum PlaylistResult {
 struct Handler;
 impl EventHandler for Handler {
     fn message(&self, ctx: Context, msg: Message) {
-        if msg.channel_id != dotenv!("CHANNEL").parse::<u64>().unwrap() {
+        if msg.channel_id != env::var("CHANNEL").unwrap().parse::<u64>().unwrap() {
             // My god this needs to be improved
             return;
         }
-        if msg.content.starts_with("!playlist"){
-            if let Err(why) = msg.channel_id.say(&ctx.http, format!("Playlist is here: https://open.spotify.com/playlist/{}", &dotenv!("PLAYLIST")[17..])) {
+        if msg.content.starts_with("!playlist") {
+            if let Err(why) = msg.channel_id.say(
+                &ctx.http,
+                format!(
+                    "Playlist is here: https://open.spotify.com/playlist/{}",
+                    &env::var("PLAYLIST").unwrap().as_str()[17..]
+                ),
+            ) {
                 println!("Error sending message: {:?}", why);
             }
             return;
@@ -65,7 +71,7 @@ impl EventHandler for Handler {
             for c in SPOTIFY_TRACK_REGEX.captures_iter(&msg.content) {
                 ids.insert(c.get(1).unwrap().as_str().to_string());
             }
-            if ids.len()==0 {
+            if ids.len() == 0 {
                 return;
             }
             match add_to_playlist(ids) {
@@ -90,9 +96,9 @@ impl EventHandler for Handler {
 }
 
 fn main() {
-    // Configure the client with your Discord bot token in the environment.
-    let token = dotenv!("DISCORD_TOKEN");
-    let mut client = Client::new(&token, Handler).expect("Err creating client");
+    dotenv().ok();
+
+    let mut client = Client::new(&env::var("DISCORD_TOKEN").unwrap().as_str(), Handler).expect("Err creating client");
 
     if let Err(why) = client.start() {
         println!("Client error: {:?}", why);
@@ -101,7 +107,7 @@ fn main() {
 
 fn add_to_playlist(tracks_to_add: HashSet<String>) -> PlaylistResult {
     let mut tracks_to_add = tracks_to_add.clone();
-    let playlist_id = String::from(dotenv!("PLAYLIST"));
+    let playlist_id = String::from(env::var("PLAYLIST").unwrap().as_str());
     let duplicates = filter_duplicates(&playlist_id, &mut tracks_to_add);
 
     match SPOTIFY.user_playlist_add_tracks(
