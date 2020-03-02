@@ -16,31 +16,6 @@ lazy_static! {
         Regex::new(r"https://open.spotify.com/track/([a-zA-Z0-9]{22})").unwrap();
 }
 
-lazy_static! {
-    static ref SPOTIFY: Spotify = {
-        let mut spotify_oauth = SpotifyOAuth::default()
-            .scope("playlist-modify-private playlist-modify-public")
-            .client_id(env::var("CLIENT_ID").unwrap().as_str())
-            .client_secret(env::var("CLIENT_SECRET").unwrap().as_str())
-            .redirect_uri("http://localhost.com")
-            .build();
-        match get_token(&mut spotify_oauth) {
-            Some(token_info) => {
-                let client_credential = SpotifyClientCredentials::default()
-                    .token_info(token_info)
-                    .build();
-                Spotify::default()
-                    .client_credentials_manager(client_credential)
-                    .build()
-            }
-            None => {
-                println!("auth failed");
-                panic!("Unable to conect to Spotify");
-            }
-        }
-    };
-}
-
 enum PlaylistResult {
     Ok,
     SemiOk,
@@ -105,28 +80,59 @@ fn main() {
     }
 }
 
+fn get_spotify() -> Result<Spotify, String>
+{
+    let mut spotify_oauth = SpotifyOAuth::default()
+        .scope("playlist-modify-private playlist-modify-public")
+        .client_id(env::var("CLIENT_ID").unwrap().as_str())
+        .client_secret(env::var("CLIENT_SECRET").unwrap().as_str())
+        .redirect_uri("http://localhost.com")
+        .build();
+    match get_token(&mut spotify_oauth) {
+        Some(token_info) => {
+            let client_credential = SpotifyClientCredentials::default()
+                .token_info(token_info)
+                .build();
+            Ok(Spotify::default()
+                .client_credentials_manager(client_credential)
+                .build())
+        }
+        None => {
+            Err(String::from("Failed Auth, unable to get token"))
+        }
+    }
+}
+
 fn add_to_playlist(tracks_to_add: HashSet<String>) -> PlaylistResult {
     let mut tracks_to_add = tracks_to_add.clone();
     let playlist_id = String::from(env::var("PLAYLIST").unwrap().as_str());
     let duplicates = filter_duplicates(&playlist_id, &mut tracks_to_add);
 
-    match SPOTIFY.user_playlist_add_tracks(
-        "spotify",
-        &playlist_id,
-        &tracks_to_add.into_iter().collect::<Vec<_>>(),
-        None,
-    ) {
-        Err(e) => {
-            println!("Adding playlist error: {:?}", e);
-            return PlaylistResult::Err("Failed to add to playlist".to_string());
-        }
-        _ => {
-            if duplicates {
-                return PlaylistResult::SemiOk;
-            } else {
-                return PlaylistResult::Ok;
+    if tracks_to_add.is_empty() {
+        return PlaylistResult::Err("No tracks to add".to_string());
+    }
+
+    match get_spotify() {
+        Ok(spotify) => {
+        match spotify.user_playlist_add_tracks(
+            "spotify",
+            &playlist_id,
+            &tracks_to_add.into_iter().collect::<Vec<_>>(),
+            None) {
+                Err(e) => {
+                    println!("Adding playlist error: {:?}", e);
+                    return PlaylistResult::Err("Failed to add to playlist".to_string());
+                }
+                _ => {
+                    if duplicates {
+                        return PlaylistResult::SemiOk;
+                    } else {
+                        return PlaylistResult::Ok;
+                    }
+                }
             }
-        }
+        },
+        Err(msg) => return PlaylistResult::Err(msg),
     }
 }
 
@@ -134,32 +140,37 @@ fn filter_duplicates(playlist_id: &str, tracks_to_check: &mut HashSet<String>) -
     let amount = 100;
     let mut current = 0;
     let mut filtered = false;
-    while let Ok(tracklist) = SPOTIFY.user_playlist_tracks(
-        "spotify",
-        &playlist_id,
-        None,
-        amount,
-        amount * current,
-        None,
-    ) {
-        for track in tracklist.items.into_iter() {
-            let track_id = track.track.id.unwrap_or_default();
-            if tracks_to_check.contains(&track_id) {
-                let err = tracks_to_check.remove(&track_id);
-                println!("Status: {}", err);
-                filtered = true;
+    match get_spotify() {
+        Ok(spotify) => {
+            while let Ok(tracklist) = spotify.user_playlist_tracks(
+                "spotify",
+                &playlist_id,
+                None,
+                amount,
+                amount * current,
+                None,
+            ) {
+                for track in tracklist.items.into_iter() {
+                    let track_id = track.track.id.unwrap_or_default();
+                    if tracks_to_check.contains(&track_id) {
+                        let err = tracks_to_check.remove(&track_id);
+                        println!("Status: {}", err);
+                        filtered = true;
+                    }
+                    if tracks_to_check.len() == 0 {
+                        break;
+                    }
+                }
+                if tracks_to_check.len() == 0 {
+                    break;
+                }
+                match tracklist.next {
+                    Some(_) => current += 1,
+                    None => break,
+                }
             }
-            if tracks_to_check.len() == 0 {
-                break;
-            }
-        }
-        if tracks_to_check.len() == 0 {
-            break;
-        }
-        match tracklist.next {
-            Some(_) => current += 1,
-            None => break,
-        }
+        },
+        Err(_) => println!("Unable to connect to Spotify")
     }
     filtered
 }
