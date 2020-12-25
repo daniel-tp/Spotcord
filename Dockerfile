@@ -2,8 +2,8 @@ FROM ekidd/rust-musl-builder:latest as builder
 
 RUN USER=rust cargo new spotcord
 WORKDIR ./spotcord
-ADD --chown=rust:rust Cargo.toml Cargo.lock ./
-RUN cargo build --release
+#ADD --chown=rust:rust Cargo.toml Cargo.lock ./
+#RUN cargo build --release
 
 ADD --chown=rust:rust . ./
 RUN cargo build --release
