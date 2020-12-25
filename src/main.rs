@@ -1,16 +1,14 @@
 use dotenv::dotenv;
 use lazy_static::lazy_static;
 use regex::Regex;
-use rspotify::spotify::client::Spotify;
-use rspotify::spotify::oauth2::{SpotifyClientCredentials, SpotifyOAuth};
-use rspotify::spotify::util::get_token;
-use serenity::{
-    model::{channel::Message, gateway::Activity, gateway::Ready},
-    prelude::*,
-};
+
+use serenity::{async_trait, model::{channel::{Message, ReactionType}, gateway::Ready, prelude::Activity}, prelude::*};
 use std::collections::HashSet;
 use std::env;
 
+use rspotify::{client::Spotify, util::get_token};
+use rspotify::oauth2::SpotifyClientCredentials;
+use rspotify::oauth2::SpotifyOAuth;
 lazy_static! {
     static ref SPOTIFY_TRACK_REGEX: Regex =
         Regex::new(r"https://open.spotify.com/track/([a-zA-Z0-9]{22})").unwrap();
@@ -23,8 +21,10 @@ enum PlaylistResult {
 }
 
 struct Handler;
+
+#[async_trait]
 impl EventHandler for Handler {
-    fn message(&self, ctx: Context, msg: Message) {
+    async fn message(&self, ctx: Context, msg: Message) {
         if msg.channel_id != env::var("CHANNEL").unwrap().parse::<u64>().unwrap() {
             // My god this needs to be improved
             return;
@@ -36,7 +36,7 @@ impl EventHandler for Handler {
                     "Playlist is here: https://open.spotify.com/playlist/{}",
                     &env::var("PLAYLIST").unwrap().as_str()[17..]
                 ),
-            ) {
+            ).await {
                 println!("Error sending message: {:?}", why);
             }
             return;
@@ -49,38 +49,52 @@ impl EventHandler for Handler {
             if ids.len() == 0 {
                 return;
             }
-            match add_to_playlist(ids) {
+            match add_to_playlist(ids).await {
                 PlaylistResult::Ok => {
-                    msg.react(&ctx, "🔊").ok();
+                    msg.react(&ctx, ReactionType::Unicode("🔊".to_string())).await.ok();
                 }
                 PlaylistResult::SemiOk => {
-                    msg.react(&ctx, "⁉️").ok();
+                    msg.react(&ctx, ReactionType::Unicode("⁉️".to_string())).await.ok();
                 }
                 PlaylistResult::Err(e) => {
-                    msg.react(&ctx, "🔇").ok();
+                    msg.react(&ctx, ReactionType::Unicode("🔇".to_string())).await.ok();
                     println!("Adding playlist error: {:?}", e);
                 }
             }
         }
     }
-    fn ready(&self, ctx: Context, ready: Ready) {
+    async fn ready(&self, ctx: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
         let activity = Activity::listening("Your Music");
-        ctx.set_activity(activity);
+        ctx.set_activity(activity).await;
     }
 }
-
-fn main() {
+#[tokio::main]
+async fn main(){
     dotenv().ok();
 
-    let mut client = Client::new(&env::var("DISCORD_TOKEN").unwrap().as_str(), Handler).expect("Err creating client");
+    let token = env::var("DISCORD_TOKEN")
+        .expect("Expected a token in the environment");
 
-    if let Err(why) = client.start() {
+    // Create a new instance of the Client, logging in as a bot. This will
+    // automatically prepend your bot token with "Bot ", which is a requirement
+    // by Discord for bot users.
+    let mut client = Client::builder(&token)
+        .event_handler(Handler)
+        .await
+        .expect("Err creating client");
+
+    // Finally, start a single shard, and start listening to events.
+    //
+    // Shards will automatically attempt to reconnect, and will perform
+    // exponential backoff until it reconnects.
+    if let Err(why) = client.start().await {
         println!("Client error: {:?}", why);
     }
+    //Ok(())
 }
 
-fn get_spotify() -> Result<Spotify, String>
+async fn get_spotify() -> Result<Spotify, String>
 {
     let mut spotify_oauth = SpotifyOAuth::default()
         .scope("playlist-modify-private playlist-modify-public")
@@ -88,7 +102,8 @@ fn get_spotify() -> Result<Spotify, String>
         .client_secret(env::var("CLIENT_SECRET").unwrap().as_str())
         .redirect_uri("http://localhost.com")
         .build();
-    match get_token(&mut spotify_oauth) {
+
+    match get_token(&mut spotify_oauth).await {
         Some(token_info) => {
             let client_credential = SpotifyClientCredentials::default()
                 .token_info(token_info)
@@ -103,22 +118,22 @@ fn get_spotify() -> Result<Spotify, String>
     }
 }
 
-fn add_to_playlist(tracks_to_add: HashSet<String>) -> PlaylistResult {
+async fn add_to_playlist(tracks_to_add: HashSet<String>) -> PlaylistResult {
     let mut tracks_to_add = tracks_to_add.clone();
     let playlist_id = String::from(env::var("PLAYLIST").unwrap().as_str());
-    let duplicates = filter_duplicates(&playlist_id, &mut tracks_to_add);
+    let duplicates = filter_duplicates(&playlist_id, &mut tracks_to_add).await;
 
     if tracks_to_add.is_empty() {
         return PlaylistResult::Err("No tracks to add".to_string());
     }
 
-    match get_spotify() {
+    match get_spotify().await {
         Ok(spotify) => {
         match spotify.user_playlist_add_tracks(
             "spotify",
             &playlist_id,
             &tracks_to_add.into_iter().collect::<Vec<_>>(),
-            None) {
+            None).await {
                 Err(e) => {
                     println!("Adding playlist error: {:?}", e);
                     return PlaylistResult::Err("Failed to add to playlist".to_string());
@@ -136,11 +151,11 @@ fn add_to_playlist(tracks_to_add: HashSet<String>) -> PlaylistResult {
     }
 }
 
-fn filter_duplicates(playlist_id: &str, tracks_to_check: &mut HashSet<String>) -> bool {
+async fn filter_duplicates(playlist_id: &str, tracks_to_check: &mut HashSet<String>) -> bool {
     let amount = 100;
     let mut current = 0;
     let mut filtered = false;
-    match get_spotify() {
+    match get_spotify().await {
         Ok(spotify) => {
             while let Ok(tracklist) = spotify.user_playlist_tracks(
                 "spotify",
@@ -149,9 +164,9 @@ fn filter_duplicates(playlist_id: &str, tracks_to_check: &mut HashSet<String>) -
                 amount,
                 amount * current,
                 None,
-            ) {
+            ).await {
                 for track in tracklist.items.into_iter() {
-                    let track_id = track.track.id.unwrap_or_default();
+                    let track_id = track.track.unwrap().id.unwrap_or_default(); //TODO: improve this
                     if tracks_to_check.contains(&track_id) {
                         let err = tracks_to_check.remove(&track_id);
                         println!("Status: {}", err);
