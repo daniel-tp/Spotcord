@@ -3,10 +3,10 @@ WORKDIR /usr/src
 
 RUN USER=root cargo new spotcord
 WORKDIR /usr/src/spotcord
-COPY Cargo.toml Cargo.lock ./
+ADD --chown=rust:rust Cargo.toml Cargo.lock ./
 RUN cargo build --release
 
-COPY src ./src
+ADD --chown=rust:rust src ./src
 RUN cargo build --release
 
 FROM alpine:latest
