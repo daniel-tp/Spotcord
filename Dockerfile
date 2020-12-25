@@ -5,7 +5,7 @@ WORKDIR ./spotcord
 ADD --chown=rust:rust Cargo.toml Cargo.lock ./
 RUN cargo build --release
 
-ADD --chown=rust:rust src ./src
+COPY src ./src
 RUN cargo build --release
 
 FROM alpine:latest
