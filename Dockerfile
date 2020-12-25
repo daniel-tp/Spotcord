@@ -10,6 +10,6 @@ RUN cargo build --release
 
 FROM alpine:latest
 RUN apk --no-cache add ca-certificates
-COPY --from=builder /usr/src/spotcord/target/x86_64-unknown-linux-musl/release/spotcord /usr/local/bin/spotcord
+COPY --from=builder /home/rust/src/spotcord/target/x86_64-unknown-linux-musl/release/spotcord /usr/local/bin/spotcord
 
-CMD ["spotcord"]
+ENTRYPOINT spotcord
