@@ -2,13 +2,24 @@ use dotenv::dotenv;
 use lazy_static::lazy_static;
 use regex::Regex;
 
-use serenity::{async_trait, model::{channel::{Message, ReactionType}, gateway::Ready, prelude::Activity}, prelude::*};
+use serenity::{
+    async_trait,
+    model::{
+        channel::{Message, ReactionType},
+        gateway::Ready,
+        prelude::Activity,
+    },
+    prelude::*,
+};
 use std::collections::HashSet;
 use std::env;
 
-use rspotify::{client::Spotify, util::get_token};
 use rspotify::oauth2::SpotifyClientCredentials;
 use rspotify::oauth2::SpotifyOAuth;
+use rspotify::{client::Spotify, util::get_token};
+
+use anyhow::{anyhow, Result};
+
 lazy_static! {
     static ref SPOTIFY_TRACK_REGEX: Regex =
         Regex::new(r"https://open.spotify.com/track/([a-zA-Z0-9]{22})").unwrap();
@@ -17,7 +28,6 @@ lazy_static! {
 enum PlaylistResult {
     Ok,
     SemiOk,
-    Err(String),
 }
 
 struct Handler;
@@ -30,37 +40,52 @@ impl EventHandler for Handler {
             return;
         }
         if msg.content.starts_with("!playlist") {
-            if let Err(why) = msg.channel_id.say(
-                &ctx.http,
-                format!(
-                    "Playlist is here: https://open.spotify.com/playlist/{}",
-                    &env::var("PLAYLIST").unwrap().as_str()[17..]
-                ),
-            ).await {
+            if let Err(why) = msg
+                .channel_id
+                .say(
+                    &ctx.http,
+                    format!(
+                        "Playlist is here: https://open.spotify.com/playlist/{}",
+                        &env::var("PLAYLIST").unwrap().as_str()[17..]
+                    ),
+                )
+                .await
+            {
                 println!("Error sending message: {:?}", why);
             }
             return;
         }
         if msg.content.contains("spotify") {
             let mut ids: HashSet<String> = HashSet::new();
+            let mut last_track = "".to_string();
             for c in SPOTIFY_TRACK_REGEX.captures_iter(&msg.content) {
-                ids.insert(c.get(1).unwrap().as_str().to_string());
+                last_track = c.get(1).unwrap().as_str().to_string();
+                ids.insert(last_track.clone());
             }
             if ids.len() == 0 {
                 return;
             }
             match add_to_playlist(ids).await {
-                PlaylistResult::Ok => {
-                    msg.react(&ctx, ReactionType::Unicode("🔊".to_string())).await.ok();
+                Ok(PlaylistResult::Ok) => {
+                    msg.react(&ctx, ReactionType::Unicode("🔊".to_string()))
+                        .await
+                        .ok();
                 }
-                PlaylistResult::SemiOk => {
-                    msg.react(&ctx, ReactionType::Unicode("⁉️".to_string())).await.ok();
+                Ok(PlaylistResult::SemiOk) => {
+                    msg.react(&ctx, ReactionType::Unicode("⁉️".to_string()))
+                        .await
+                        .ok();
                 }
-                PlaylistResult::Err(e) => {
-                    msg.react(&ctx, ReactionType::Unicode("🔇".to_string())).await.ok();
+                Err(e) => {
+                    msg.react(&ctx, ReactionType::Unicode("🔇".to_string()))
+                        .await
+                        .ok();
                     println!("Adding playlist error: {:?}", e);
                 }
             }
+            let track_name = get_track_name(last_track).await.unwrap();
+            let activity = Activity::listening(&track_name);
+            ctx.set_activity(activity).await;
         }
     }
     async fn ready(&self, ctx: Context, ready: Ready) {
@@ -70,11 +95,10 @@ impl EventHandler for Handler {
     }
 }
 #[tokio::main]
-async fn main(){
+async fn main() {
     dotenv().ok();
 
-    let token = env::var("DISCORD_TOKEN")
-        .expect("Expected a token in the environment");
+    let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
 
     // Create a new instance of the Client, logging in as a bot. This will
     // automatically prepend your bot token with "Bot ", which is a requirement
@@ -94,8 +118,7 @@ async fn main(){
     //Ok(())
 }
 
-async fn get_spotify() -> Result<Spotify, String>
-{
+async fn get_spotify() -> Result<Spotify> {
     let mut spotify_oauth = SpotifyOAuth::default()
         .scope("playlist-modify-private playlist-modify-public")
         .client_id(env::var("CLIENT_ID").unwrap().as_str())
@@ -112,42 +135,40 @@ async fn get_spotify() -> Result<Spotify, String>
                 .client_credentials_manager(client_credential)
                 .build())
         }
-        None => {
-            Err(String::from("Failed Auth, unable to get token"))
-        }
+        None => Err(anyhow!("Failed Auth, unable to get token")),
     }
 }
 
-async fn add_to_playlist(tracks_to_add: HashSet<String>) -> PlaylistResult {
+async fn add_to_playlist(tracks_to_add: HashSet<String>) -> Result<PlaylistResult> {
     let mut tracks_to_add = tracks_to_add.clone();
     let playlist_id = String::from(env::var("PLAYLIST").unwrap().as_str());
     let duplicates = filter_duplicates(&playlist_id, &mut tracks_to_add).await;
 
     if tracks_to_add.is_empty() {
-        return PlaylistResult::Err("No tracks to add".to_string());
+        return Err(anyhow!("No tracks to add"));
     }
 
-    match get_spotify().await {
-        Ok(spotify) => {
-        match spotify.user_playlist_add_tracks(
+    let spotify = get_spotify().await?;
+    match spotify
+        .user_playlist_add_tracks(
             "spotify",
             &playlist_id,
             &tracks_to_add.into_iter().collect::<Vec<_>>(),
-            None).await {
-                Err(e) => {
-                    println!("Adding playlist error: {:?}", e);
-                    return PlaylistResult::Err("Failed to add to playlist".to_string());
-                }
-                _ => {
-                    if duplicates {
-                        return PlaylistResult::SemiOk;
-                    } else {
-                        return PlaylistResult::Ok;
-                    }
-                }
+            None,
+        )
+        .await
+    {
+        Err(e) => {
+            println!("Adding playlist error: {:?}", e);
+            return Err(anyhow!("Failed to add to playlist"));
+        }
+        _ => {
+            if duplicates {
+                return Ok(PlaylistResult::SemiOk);
+            } else {
+                return Ok(PlaylistResult::Ok);
             }
-        },
-        Err(msg) => return PlaylistResult::Err(msg),
+        }
     }
 }
 
@@ -157,14 +178,17 @@ async fn filter_duplicates(playlist_id: &str, tracks_to_check: &mut HashSet<Stri
     let mut filtered = false;
     match get_spotify().await {
         Ok(spotify) => {
-            while let Ok(tracklist) = spotify.user_playlist_tracks(
-                "spotify",
-                &playlist_id,
-                None,
-                amount,
-                amount * current,
-                None,
-            ).await {
+            while let Ok(tracklist) = spotify
+                .user_playlist_tracks(
+                    "spotify",
+                    &playlist_id,
+                    None,
+                    amount,
+                    amount * current,
+                    None,
+                )
+                .await
+            {
                 for track in tracklist.items.into_iter() {
                     let track_id = track.track.unwrap().id.unwrap_or_default(); //TODO: improve this
                     if tracks_to_check.contains(&track_id) {
@@ -184,8 +208,16 @@ async fn filter_duplicates(playlist_id: &str, tracks_to_check: &mut HashSet<Stri
                     None => break,
                 }
             }
-        },
-        Err(_) => println!("Unable to connect to Spotify")
+        }
+        Err(_) => println!("Unable to connect to Spotify"),
     }
     filtered
+}
+
+async fn get_track_name(id: String) -> Result<String> {
+    let spotify = get_spotify().await?;
+    match spotify.track(&id).await {
+        Ok(track) => Ok(track.name),
+        Err(_) => Err(anyhow!("Unable to get matching track"))
+    }
 }
